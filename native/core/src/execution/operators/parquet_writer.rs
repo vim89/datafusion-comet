@@ -359,6 +359,8 @@ pub struct ParquetWriterExec {
     output_path: String,
     /// Compression codec
     compression: ParquetCompression,
+    /// Spark's resolved parquet.block.size. None preserves older serialized plans.
+    row_group_size_bytes: Option<u32>,
     /// Partition ID (from Spark TaskContext)
     partition_id: i32,
     /// Column names to use in the output Parquet file
@@ -402,6 +404,7 @@ impl ParquetWriterExec {
             input,
             output_path,
             compression,
+            row_group_size_bytes: None,
             partition_id,
             column_names,
             output_schema,
@@ -416,6 +419,14 @@ impl ParquetWriterExec {
     /// the JVM created at `output_path`, which the writer then never creates itself.
     pub fn with_output_stream(mut self, output_stream: Option<Arc<dyn OutputStreamSink>>) -> Self {
         self.output_stream = output_stream;
+        self
+    }
+
+    /// Set Spark's row-group byte target; zero on the wire denotes an older plan.
+    pub fn with_row_group_size_bytes(mut self, bytes: u32) -> Self {
+        if bytes != 0 {
+            self.row_group_size_bytes = Some(bytes);
+        }
         self
     }
 
@@ -617,6 +628,7 @@ impl ExecutionPlan for ParquetWriterExec {
                     self.output_schema.clone(),
                     self.object_store_options.clone(),
                 )?
+                .with_row_group_size_bytes(self.row_group_size_bytes.unwrap_or(0))
                 .with_output_stream(self.output_stream.clone()),
             )),
             _ => Err(DataFusionError::Internal(
@@ -664,9 +676,14 @@ impl ExecutionPlan for ParquetWriterExec {
         let part_file = self.output_path.clone();
 
         // Configure writer properties
-        let props = WriterProperties::builder()
-            .set_compression(compression)
-            .build();
+        let mut props = WriterProperties::builder().set_compression(compression);
+        if let Some(bytes) = self.row_group_size_bytes {
+            // parquet-mr flushes by estimated bytes, without parquet-rs's default row cap.
+            props = props
+                .set_max_row_group_bytes(Some(bytes as usize))
+                .set_max_row_group_row_count(None);
+        }
+        let props = props.build();
 
         let object_store_options = self.object_store_options.clone();
         let mut writer = Self::create_arrow_writer(
@@ -833,6 +850,29 @@ mod tests {
         let reader = SerializedFileReader::new(File::open(written)?)?;
         assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parquet_writer_honors_spark_row_group_size() -> Result<()> {
+        let batches = (1..=8)
+            .map(create_test_record_batch)
+            .collect::<Result<Vec<_>>>()?;
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("part-00000.parquet");
+        let writer = writer_of(
+            batches,
+            format!("file://{}", path.display()),
+            ParquetCompression::None,
+        )?
+        .with_row_group_size_bytes(8192);
+
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+
+        let reader = SerializedFileReader::new(File::open(path)?)?;
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 8000);
+        assert!(reader.metadata().num_row_groups() > 1);
         Ok(())
     }
 

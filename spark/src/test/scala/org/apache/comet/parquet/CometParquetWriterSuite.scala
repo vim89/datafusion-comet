@@ -106,6 +106,35 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  test("native parquet writer uses Spark's row group byte target") {
+    withTempPath { dir =>
+      val sourcePath = new File(dir, "source").getAbsolutePath
+      val outputPath = new File(dir, "output").getAbsolutePath
+      val source = materializeAsCometSource(
+        spark.range(0, 50000).selectExpr("id", "repeat('x', 80) AS payload"),
+        sourcePath)
+
+      withNativeWriter {
+        val plan = captureWritePlan(
+          path => source.write.option("parquet.block.size", "8192").parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+
+        val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+        assert(partFiles.nonEmpty)
+        val conf = spark.sparkContext.hadoopConfiguration
+        val rowGroupCounts = partFiles.map { file =>
+          val input = HadoopInputFile.fromPath(new Path(file.getAbsolutePath), conf)
+          Using.resource(ParquetFileReader.open(input))(_.getFooter.getBlocks.size())
+        }
+        assert(
+          rowGroupCounts.exists(_ > 1),
+          s"Expected small row groups, found ${rowGroupCounts.mkString(", ")}")
+        assert(spark.read.parquet(outputPath).count() == 50000L)
+      }
+    }
+  }
+
   test("basic parquet write with native scan child") {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath

@@ -333,8 +333,9 @@ With `spark.comet.write.parquet.enabled=true`:
   after a write: file index refresh, cache refresh, partition refresh and statistics update. Later
   queries can return the table's previous contents until `REFRESH TABLE`
   ([#6315](https://github.com/apache/datafusion-comet/issues/6315)).
-- **Spark's Parquet writer properties are ignored.** `parquet.block.size`, page size, dictionary,
-  writer version and statistics settings never reach the native writer
+- **Most Spark Parquet writer properties are ignored.** The native writer now receives the
+  resolved `parquet.block.size` row-group target. Page size, dictionary, writer version and
+  statistics settings still do not reach it
   ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
 - **An input with no partitions writes no file.** Spark writes one file that holds the schema
   ([#5303](https://github.com/apache/datafusion-comet/issues/5303)).
@@ -378,10 +379,10 @@ With `spark.comet.write.parquet.enabled=true`:
 
 With `spark.comet.write.parquet.enabled=true`:
 
-- **Row groups that outgrow the memory pool.** The native writer cuts row groups by row count
-  only, where Spark uses `parquet.block.size`, and it cannot spill. With wide or nested rows, the
-  open row group can outgrow the off-heap pool and fail the task. The audit did not reproduce a
-  failure, because a 239 MB row group fit in a 256 MB pool
+- **Row groups that outgrow the memory pool.** The native writer uses Spark's row-group byte
+  target but cannot spill an open row group. A large batch or wide nested rows can still outgrow
+  the off-heap pool and fail the task. An earlier audit, before the byte target was passed through,
+  observed a 239 MB row group fitting in a 256 MB pool
   ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
 
 ### Differences that are not Comet bugs

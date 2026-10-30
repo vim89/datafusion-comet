@@ -27,6 +27,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.FileAlreadyExistsException
 import org.apache.hadoop.mapreduce.{TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.parquet.hadoop.codec.CodecConfig
 import org.apache.spark.{TaskContext, TaskOutputFileAlreadyExistException}
 import org.apache.spark.internal.Logging
@@ -399,8 +400,14 @@ object CometWriteFilesExec extends Logging {
       nativeMetrics: CometMetricNode,
       numPartitions: Int,
       partitionId: Int): Unit = {
+    val rowGroupSize = ParquetOutputFormat.getBlockSize(hadoopConf)
+    require(rowGroupSize > 0, s"parquet.block.size must be positive: $rowGroupSize")
+
     def run(output: Option[HadoopFileOutput]): Unit = {
-      writer.setOutputPath(filePath).setJvmOutputStream(output.isDefined)
+      writer
+        .setOutputPath(filePath)
+        .setJvmOutputStream(output.isDefined)
+        .setRowGroupSizeBytes(rowGroupSize)
       val execIterator = CometExec.getCometIterator(
         inputs,
         numOutputCols,

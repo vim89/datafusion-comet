@@ -1052,6 +1052,9 @@ message ParquetWriter {
   // operators call, for every file that is neither local nor on HDFS. See HadoopFileOutput for
   // why.
   bool jvm_output_stream = 10;
+  // Resolved by parquet-mr from Spark's task configuration. Zero means an older plan that did
+  // not carry this setting; new plans pass a positive parquet.block.size value.
+  uint32 row_group_size_bytes = 11;
 }
 
 enum AggregateMode {
